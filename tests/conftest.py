@@ -191,6 +191,11 @@ class FakeLangfuse:
     def __init__(self) -> None:
         self._otel_tracer = FakeTracer()
         self.observations: list[FakeObservation] = []
+        self.flush_error: Exception | None = None
+
+    def flush(self) -> None:
+        if self.flush_error is not None:
+            raise self.flush_error
 
     @staticmethod
     def create_trace_id(*, seed: str | None = None) -> str:

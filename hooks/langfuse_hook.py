@@ -3480,15 +3480,37 @@ def emit_new_turns_from_transcript(
             session_history=session_history,
         )
 
-        # Known limitation (accepted, like the crash-between-emit-and-save
-        # duplicate window): progress is persisted before the SDK flush in
-        # main(); a dropped flush leaves emitted_keys pointing at spans that
-        # never reached the server.
+        # Persist progress only after the export is flushed. On a failed or
+        # timed-out flush the offset stays put, so the next firing re-sends
+        # the turn under the same deterministic trace id.
+        if not flush_langfuse_client(langfuse):
+            info(f"Langfuse flush failed or timed out; state not saved, turns will be re-sent (session={session_id})")
+            return 0
         with FileLock(LOCK_FILE):
             state = load_hook_state()
             save_session_state(state, key, session_state)
 
     return emitted
+
+
+FLUSH_TIMEOUT_SECONDS = 30.0
+
+
+def flush_langfuse_client(langfuse: Langfuse) -> bool:
+    """Flush synchronously, bounded; True only if it finished without error."""
+    flushed = threading.Event()
+
+    def _flush():
+        try:
+            langfuse.flush()
+            flushed.set()
+        except Exception as e:
+            debug(f"Langfuse flush failed: {type(e).__name__}: {e}")
+
+    t = threading.Thread(target=_flush, daemon=True)
+    t.start()
+    t.join(FLUSH_TIMEOUT_SECONDS)
+    return flushed.is_set()
 
 
 def flush_and_shutdown_langfuse_client(langfuse: Optional[Langfuse]) -> None:

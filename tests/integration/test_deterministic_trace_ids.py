@@ -233,3 +233,33 @@ def test_seeded_open_turn_resumes_without_reopening_its_root(
     hook_module.emit_new_turns_from_transcript(fake_langfuse, config, "session-seeded", transcript)
 
     assert len(get_root_observations(fake_langfuse)) == roots_after_first_firing
+
+
+def test_flush_failure_leaves_state_unadvanced_and_turn_is_resent(
+    hook_module, fake_langfuse, isolated_hook_state, tmp_path
+):
+    transcript = write_two_turn_transcript(tmp_path)
+    seed = "session-abc"
+    config = hook_module.LangfuseConfig(
+        "public", "secret", "https://example.test", "user-1", trace_seed=seed
+    )
+
+    fake_langfuse.flush_error = RuntimeError("export dropped")
+    emitted = hook_module.emit_new_turns_from_transcript(
+        fake_langfuse, config, "session-seeded", transcript
+    )
+
+    assert emitted == 0
+    assert not (isolated_hook_state / "langfuse_state.json").exists()
+
+    # The next firing re-sends turn 1 under the same deterministic trace id.
+    fake_langfuse.flush_error = None
+    fake_langfuse.observations.clear()
+    emitted = hook_module.emit_new_turns_from_transcript(
+        fake_langfuse, config, "session-seeded", transcript
+    )
+
+    assert emitted == 1
+    assert get_forced_trace_id(get_root_observations(fake_langfuse)[0]) == expected_trace_id(seed, 1)
+    state = json.loads((isolated_hook_state / "langfuse_state.json").read_text(encoding="utf-8"))
+    assert next(iter(state.values()))["turn_count"] == 1
